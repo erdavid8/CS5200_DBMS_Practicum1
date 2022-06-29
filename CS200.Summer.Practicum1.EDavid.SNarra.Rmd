@@ -1,0 +1,658 @@
+---
+title: "Practicum 1: R Notebook"
+members: Edgar Alan David - david.e@northeastern.edu
+         Sri Charitha Narra - narra.sr@northeastern.edu
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+# 1. Library
+# RODBC - package that implements Microsoft ODBC(Open Database Connectivity) database connectivity
+# DBI - package R Database interface
+# ODBC - package to connect to ODBC compatible database(using DBI interface)
+# RMySQL - legacy DBI to MySQL/MariaDB
+# sqldf - package for running SQL statements on R dataframe
+# RSQLite - allow to connect SQLite database. use for temporary memory to load the csv
+# lubridate - package for manipulating dates 
+library(RMySQL)
+library(sqldf)
+library(RSQLite)   # will be using for temporary memory to load the csv
+library(lubridate) # use for dates
+
+db_user <- 'root'
+db_password <- '072015ead'
+db_host <- 'localhost'
+db_port <- 3306
+
+# use for creating a database named birdstrikesdb
+mydb = dbConnect(RMySQL::MySQL(), user=db_user, password=db_password, host=db_host)
+
+# create a database if 'birdstrikesdb' does not exists using MySQL and R
+db_name <- 'birdstrikesdb'
+dbSendQuery(mydb, "CREATE DATABASE IF NOT EXISTS birdstrikesdb;")
+dbSendQuery(mydb, "USE birdstrikesdb")
+
+# reconnecting to the MySQL database that was just created
+mysqlconnection <- dbConnect(RMySQL::MySQL(), dbname=db_name, host=db_host, port=db_port, 
+                             user=db_user, password=db_password)
+sqliteconnection <- dbConnect(RSQLite::SQLite(), ":memory:")
+```
+
+List tables in database.
+```{r}
+dbListTables(mysqlconnection)
+```
+
+Task 1(20pts / 2.5hrs):
+
+```{r}
+# Task 1.B, 1.C:
+# airports(aid, airportName, airportCode, state)
+dbSendQuery(mysqlconnection, "CREATE TABLE airports (
+            aid INT NOT NULL AUTO_INCREMENT, 
+            airportName VARCHAR(255) NOT NULL,
+            airportCode VARCHAR(50) DEFAULT NULL,
+            state VARCHAR(50) NOT NULL,
+            PRIMARY KEY (aid))")
+```
+
+```{r}
+# Task 1.D:
+# conditions(cid, condition, explanation)
+# 1: No Cloud
+# 2: Overcast
+# 3: Some Cloud
+dbSendQuery(mysqlconnection, "CREATE TABLE IF NOT EXISTS conditions (
+            cid INT(50) PRIMARY KEY AUTO_INCREMENT NOT NULL, 
+            sky_condition VARCHAR(50) NOT NULL, 
+            explanation VARCHAR(255));")
+```
+
+```{r}
+# Task 1.E
+# harmonize flight_phase:
+# 1: take-off - climb, take-off run
+# 2: landing - landing roll, approach, descent
+# 3: inflight
+# 4: unknown - parked, taxi
+dbSendQuery(mysqlconnection, "CREATE TABLE IF NOT EXISTS flight_phase_enum (
+            fpid VARCHAR(50) PRIMARY KEY NOT NULL, 
+            status VARCHAR(50) NOT NULL);")
+```
+
+```{r}
+# Tasks 1.A:
+# note: NO duplicates in rid
+# incidents(rid, date, origin, airline, aircraft, flightPhase, altitude, conditions, warning)
+dbSendQuery(mysqlconnection, "CREATE TABLE incidents (
+            rid INT NOT NULL AUTO_INCREMENT,
+            flight_date DATE NOT NULL,                   
+            origin INT NOT NULL,
+            airline VARCHAR(255),
+            aircraft VARCHAR(50),
+            mflight_phase VARCHAR(50) NOT NULL,
+            altitude_ft INTEGER(50),
+            msky_conditions INT(50) NOT NULL,
+            pilot_warned_flag BOOLEAN,
+            PRIMARY KEY (rid),
+            FOREIGN KEY (origin) REFERENCES airports(aid),
+            FOREIGN KEY (msky_conditions) REFERENCES conditions(cid),
+            FOREIGN KEY (mflight_phase) REFERENCES flight_phase_enum (fpid));")
+```
+
+List tables in database.
+```{r}
+dbListTables(mysqlconnection)
+```
+
+Assume "Business" to be an airline name. Include in database.
+```{r}
+# Task 1.F:
+# write code to include "Business" - no need
+```
+
+Remove all "MILITARY" flights from the database
+```{r}
+# Task 1.G:
+# write code to remove "MILITARY" - DONE below
+```
+
+```{r}
+# Task 1.F:
+# Use either {sql} or {r} functions. We are using R functions so that we are flexible. - using 
+# combination of {sql} and {r} for this practicum
+```
+
+
+Task 2(25pts / 5hrs):
+
+```{r}
+# csv file
+csv_file <- "BirdStrikesData-V2.csv"
+
+# read csv file
+birdstrikesdata_csv <- read.csv(file = csv_file, header = T, stringsAsFactors = F)
+
+# rename column names to fix the see special character in first column: 'ï..rid'
+names(birdstrikesdata_csv) <- c('rid',	'aircraft',	'airport',	'model',	'wildlife_struck',	
+                                'impact',	'flight_date',	'damage',	'airline', 'origin',	
+                                'flight_phase',	'remains_collected_flag',	'Remarks',	
+                                'wildlife_size',	'sky_conditions', 'species',	
+                                'pilot_warned_flag', 'altitude_ft',	'heavy_flag')
+
+head(birdstrikesdata_csv, 10)
+```
+
+Display the structure of the R object 'birdstrikesdata_csv'
+```{r}
+str(birdstrikesdata_csv)
+```
+
+DO NOT USE THIS! instead use the SQLite in memory to load the raw data - this r code uses in-line 
+write in the MySQL database.
+```{r}
+# dbWriteTable(conn = sqliteconnection,'birdstrikesdata_table', birdstrikesdata_csv, overwrite = TRUE)
+
+# df.airlines <- sqldf::sqldf("SELECT aircraft, airline from `birdstrikesdata_csv`")
+# class(birdstrikesdata_csv)
+```
+
+Function to replace commas in altitude_ft. Need to remove commas to correctly convert the data type. 
+```{r}
+replaceCommas <- function(x){
+  x<-as.numeric(gsub("\\,", "", x))
+}
+```
+
+Create a raw dataframe from the 'birdstrikesdata_csv' and remove rows with empty cells. 
+```{r}
+options(sqldf.driver = "SQLite")
+
+# raw dataframe
+df.raw <- sqldf::sqldf("SELECT rid, aircraft, airport, flight_date, airline, origin, flight_phase, 
+                       sky_conditions, pilot_warned_flag, altitude_ft FROM `birdstrikesdata_csv`", 
+                       drv = 'SQLite')
+
+# remove the time component on the date
+flight_date <- format(as.POSIXct(c(df.raw$flight_date),format='%m/%d/%Y %H:%M'),format='%m-%d-%Y')
+
+# updated df.raw with timestamp removed
+df.raw.updated <- data.frame(rid = df.raw$rid,
+                             aircraft = df.raw$aircraft,
+                             airport = df.raw$airport,
+                             flight_date = flight_date,
+                             airline = df.raw$airline,
+                             origin = df.raw$origin,
+                             flight_phase = df.raw$flight_phase,
+                             sky_conditions = df.raw$sky_conditions,
+                             pilot_warned_flag = df.raw$pilot_warned_flag,
+                             altitude_ft = df.raw$altitude_ft)
+
+# remove empty cell in dataframe : https://stackoverflow.com/questions/42721788/filter-empty-rows-from-a-dataframe-with-r
+df.raw.noNULL <- df.raw.updated[Reduce(`&`, lapply(df.raw.updated, function(x) !(is.na(x)|x == ""))),]
+
+# change the pilot_warned_flag to TRUE or FALSE
+df.raw.noNULL$pilot_warned_flag[df.raw.noNULL$pilot_warned_flag == 'Y'] <- 1
+df.raw.noNULL$pilot_warned_flag[df.raw.noNULL$pilot_warned_flag == 'N'] <- 0
+
+# convert data type appropriately:
+df.raw.noNULL$flight_date <- as.Date(df.raw.noNULL$flight_date, "%m-%d-%Y")     # convert flight_date to data type = Date
+df.raw.noNULL$altitude_ft <- replaceCommas(df.raw.noNULL$altitude_ft)
+df.raw.noNULL$altitude_ft <- as.integer(df.raw.noNULL$altitude_ft)              # convert altitude_ft to data type = integer
+df.raw.noNULL$pilot_warned_flag <- as.integer(df.raw.noNULL$pilot_warned_flag)  # convert pilot_warned_flag to data type =                                                                                         integer(note: logical does not work when                                                                                         dbWriteTable is performed)
+
+head(df.raw.noNULL, 10)
+```
+
+Number of rows with empty cells. 
+```{r}
+# get the number of rows with/without empty cells
+nrow_raw <- nrow(df.raw)                           # no. of rows for raw data
+nrow_rawNoNULL <- nrow(df.raw.noNULL)              # no. of rows with NULL elements in any column 
+total_rows_remove = nrow_raw - nrow_rawNoNULL      # total rows removed
+print(paste0("Number of rows with empty cell = ", total_rows_remove))
+```
+
+Create airports dataframe:
+```{r}
+grpby_airportName <- sqldf::sqldf("SELECT 1 as aid, airport, origin as state FROM `df.raw.noNULL`
+                                  GROUP BY airport")
+
+# add column airportCode with value NA
+grpby_airportName[,'airportCode'] <- NA
+
+# rename column airport to airportName
+names(grpby_airportName)[names(grpby_airportName) == "airport"] <- "airportName"
+
+# reorder the columns of grpby_airlines
+col_order <- c("aid", "airportName", "airportCode", "state")
+
+grpby_airportName_new <- grpby_airportName[, col_order]
+
+# number of airports
+n.airportName <- nrow(grpby_airportName_new)
+
+# increment the aid starting from 1 to end
+grpby_airportName_new[,1] <- seq(1, n.airportName)
+
+# change the data type of airportCode to character
+grpby_airportName_new$airportCode <- as.character(grpby_airportName_new$airportCode)
+
+head(grpby_airportName_new, 10)
+```
+Create conditions dataframe: 
+```{r}
+grpby_conditions <- sqldf::sqldf("SELECT 1 as cid, sky_conditions FROM `df.raw.noNULL` GROUP BY 
+                                 sky_conditions")
+
+# add column explanation with value NA
+grpby_conditions[,'explanation'] <- NA
+
+# number of conditions
+n.conditions <- nrow(grpby_conditions)
+
+# increment the cid starting from 1 to end
+grpby_conditions[,1] <- seq(1, n.conditions)
+
+# change the data type of explanation to character
+grpby_conditions$explanation <- as.character(grpby_conditions$explanation)
+
+grpby_conditions
+```
+Create flight phase dataframe:
+```{r}
+grpby_flightPhase <- sqldf::sqldf("SELECT 1 as fpid, flight_phase FROM `df.raw.noNULL` GROUP BY 
+                                  flight_phase")
+
+# combining of different flight phase
+
+# for landing: 
+grpby_landing <- sqldf::sqldf("SELECT GROUP_CONCAT(flight_phase, ', ') as flight_phase FROM 
+                              `grpby_flightPhase` WHERE flight_phase like 'approach' or 
+                              flight_phase like 'descent' or flight_phase like 'landing roll'")
+
+# for takeoff
+grpby_takeoff <- sqldf::sqldf("SELECT GROUP_CONCAT(flight_phase, ', ') as flight_phase FROM 
+                              `grpby_flightPhase` WHERE flight_phase like 'climb' or flight_phase 
+                              like 'take-off run'")
+
+# for inflight
+grpby_inflight <- sqldf::sqldf("SELECT GROUP_CONCAT(flight_phase, ', ') as flight_phase FROM 
+                               `grpby_flightPhase` WHERE flight_phase like 'inflight'")
+
+# for unknown
+grpby_unknown <- sqldf::sqldf("SELECT GROUP_CONCAT(flight_phase, ', ') as flight_phase FROM 
+                              `grpby_flightPhase` WHERE flight_phase like 'parked' or flight_phase 
+                              like 'taxi' and (flight_phase not like 'approach' or flight_phase not 
+                              like 'descent' or flight_phase not like 'landing roll' or flight_phase 
+                              not like 'climb' or flight_phase not like 'take-off run' or 
+                              flight_phase not like 'inflight')")
+
+# combine the different flight phase
+flight.phase.values <- c(grpby_landing$flight_phase, grpby_takeoff$flight_phase, 
+                         grpby_inflight$flight_phase, grpby_unknown$flight_phase)
+
+# create a dataframe
+df.flight.phase <- data.frame(fpid = seq(1,4), 
+                              status = flight.phase.values)
+
+# change fpid values as per requirement
+df.flight.phase[df.flight.phase == 1] <- 'landing'
+df.flight.phase[df.flight.phase == 2] <- 'takeoff'
+df.flight.phase[df.flight.phase == 3] <- 'inflight'
+df.flight.phase[df.flight.phase == 4] <- 'unknown'
+
+df.flight.phase
+```
+
+Create incidents dataframe:
+```{r}
+# number of incidents are the number of rows. also each rid is unique, we can use that 
+# as number of incidents 
+# n.incidents <- sqldf::sqldf("SELECT COUNT(DISTINCT rid) FROM `df.raw.noNULL`")
+n.incidents <- nrow(df.raw.noNULL)
+
+df.incidents <- data.frame(rid = df.raw.noNULL$rid,
+                           flight_date = df.raw.noNULL$flight_date,
+                           origin = 1,
+                           airline = df.raw.noNULL$airline,
+                           aircraft = df.raw.noNULL$aircraft,
+                           mflight_phase = 1,
+                           altitude_ft = df.raw.noNULL$altitude_ft,
+                           msky_conditions = 1,
+                           pilot_warned_flag = df.raw.noNULL$pilot_warned_flag)
+                           # temp_airport = df.raw.noNULL$airport)
+
+# combine US AIRWAYS and US AIRWAYS*
+df.incidents$airline[df.incidents$airline == 'US AIRWAYS*'] <- 'US AIRWAYS'
+
+head(df.incidents, 10)
+```
+
+Link the incidents, airport, conditions and flight phase dataframe:
+```{r}
+
+# link the dataframe incidents, airport, conditions and flight phase
+for (i in 1:n.incidents) {
+  a <- grpby_airportName_new$aid[which(grpby_airportName_new$airportName == df.raw.noNULL$airport[i] & grpby_airportName_new$state == df.raw.noNULL$origin[i])]
+  c <- grpby_conditions$cid[which(grpby_conditions$sky_conditions == df.raw.noNULL$sky_conditions[i])]
+  
+  df.incidents$origin[i] <- a
+  df.incidents$msky_conditions[i] <- c
+  
+  if (df.raw.noNULL$flight_phase[i] == 'Climb' || df.raw.noNULL$flight_phase[i] == 'Take-off run') {
+    df.incidents$mflight_phase[i] <- 'takeoff'
+  } else if (df.raw.noNULL$flight_phase[i] == 'Landing Roll' || df.raw.noNULL$flight_phase[i] == 'Approach' ||  
+             df.raw.noNULL$flight_phase[i] == 'Descent') {
+    df.incidents$mflight_phase[i] <- 'landing'
+  } else if (df.raw.noNULL$flight_phase[i] == 'Inflight') {
+    df.incidents$mflight_phase[i] <- 'inflight'
+  } else {
+    df.incidents$mflight_phase[i] <- 'unknown'
+  }
+}
+
+head(df.incidents, 10)
+```
+
+Remove the 'MILITARY' flights from the dataframe
+```{r}
+df.incidents.noMilitary <- df.incidents[!(df.incidents$airline == "MILITARY"), ]
+head(df.incidents.noMilitary, 10)
+```
+
+Bulk write the dataframe into the 'birdstrikesdb' database:
+```{r}
+# bulk load data to "birdstrikesdb" database
+dbWriteTable(conn=mysqlconnection, name="incidents", value=df.incidents.noMilitary, overwrite=T, 
+             row.names = FALSE, field.types = c(rid="integer", flight_date="date", origin="integer", 
+                                                airline="VARCHAR(255)", aircraft="VARCHAR(50)", 
+                                                mflight_phase="VARCHAR(50)", altitude_ft="integer", 
+                                                msky_conditions="integer",  pilot_warned_flag="BOOLEAN"))
+dbWriteTable(mysqlconnection, "airports", grpby_airportName_new, overwrite = T, row.names = FALSE, 
+             field.types = c(aid="integer", airportName="VARCHAR(255)", airportCode="VARCHAR(50)", 
+                             state="VARCHAR(50)"))
+dbWriteTable(mysqlconnection, "conditions", grpby_conditions, overwrite = T, row.names = FALSE)
+dbWriteTable(mysqlconnection, "flight_phase_enum", df.flight.phase, overwrite = T, row.names = FALSE)
+```
+
+
+Task 3(5pts / 1hr):
+
+Run SQL chuck for birdstrikesdb -> incidents:
+```{sql connection=mysqlconnection}
+SELECT * FROM incidents;
+```
+Counts of records for the incident table. It matches with the n.incidents counts.
+```{r}
+db_incidents <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM incidents")
+numRow_db_insidents <- nrow(db_incidents)
+print(paste0("Number of incidents records = ", numRow_db_insidents))
+```
+
+Run SQL chuck for birdstrikesdb -> airports:
+```{sql connection=mysqlconnection}
+SELECT * FROM airports;
+```
+Counts of records for the airports table. It matches with the 'grpby_airportName_new' counts.
+```{r}
+db_airports <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM airports")
+numRow_db_airports <- nrow(db_airports)
+print(paste0("Number of airpots records = ", numRow_db_airports))
+```
+
+Run SQL chuck for birdstrikesdb -> conditions:
+```{sql connection=mysqlconnection}
+SELECT * FROM conditions;
+```
+Counts of records for the conditions table. It matches with the 'grpby_conditions' counts.
+```{r}
+db_conditions <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM conditions")
+numRow_db_conditions <- nrow(db_conditions)
+print(paste0("Number of conditions records = ", numRow_db_conditions))
+```
+
+Run SQL chuck for birdstrikesdb -> flight_phase_enum:
+```{sql connection=mysqlconnection}
+SELECT * FROM flight_phase_enum;
+```
+Counts of records for the flight_phase_enum table. It matches with the 'df.flight.phase' counts.
+```{r}
+db_flight_phase <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM flight_phase_enum")
+numRow_db_flight_phase <- nrow(db_flight_phase)
+print(paste0("Number of flight phase records = ", numRow_db_flight_phase))
+```
+
+Join tables incidents and airports.
+```{sql connection=mysqlconnection}
+SELECT rid, flight_date, airportName, airline, aircraft, mflight_phase, altitude_ft, 
+      msky_conditions, pilot_warned_flag FROM incidents INNER JOIN airports ON 
+      incidents.origin = airports.aid; 
+```
+
+Join tables incidents, airports, flight_phase and sky_conditions.
+```{sql connection=mysqlconnection}
+SELECT rid, flight_date, airportName, airline, status, altitude_ft, sky_conditions, 
+      pilot_warned_flag FROM incidents INNER JOIN airports ON incidents.origin = airports.aid 
+      INNER JOIN flight_phase_enum ON incidents.mflight_phase = flight_phase_enum.fpid
+      INNER JOIN conditions ON incidents.msky_conditions = conditions.cid;
+```
+
+Check number of incidents for joined tables. 
+```{r}
+num_incidents <- dbGetQuery(conn = mysqlconnection, statement = "SELECT rid, flight_date, 
+                            airportName, airline, status, altitude_ft, sky_conditions, 
+                            pilot_warned_flag FROM incidents INNER JOIN airports ON 
+                            incidents.origin = airports.aid INNER JOIN flight_phase_enum ON 
+                            incidents.mflight_phase = flight_phase_enum.fpid INNER JOIN 
+                            conditions ON incidents.msky_conditions = conditions.cid;")
+
+total_incidents <- nrow(num_incidents)
+print(paste0("Total incidents = ", total_incidents))
+```
+
+
+Task 4(10pts / 1hr):
+
+Showing the top 10 airlines with most number of incidents.
+```{sql connection=mysqlconnection}
+SELECT airline, count(airline) AS FlightCount FROM incidents GROUP BY airline ORDER BY 
+    FlightCount DESC LIMIT 10; 
+```
+
+
+Task 5(10pts / 1hr):
+
+Showing the flight phase that have an above average number bird strike incidents. 
+```{sql connection=mysqlconnection}
+SELECT mflight_phase, COUNT(mflight_phase) As count_bird_strike 
+    FROM incidents GROUP BY mflight_phase 
+    HAVING count_bird_strike > (
+      SELECT AVG(count_bird_strike) As avg_count_bird_strike FROM (SELECT COUNT(mflight_phase) 
+        As count_bird_strike FROM incidents GROUP BY mflight_phase) As sub);
+```
+
+Getting the average of count of bird strike for all incidents. 
+```{sql connection=mysqlconnection}
+SELECT AVG(count_bird_strike) As avg_count_bird_strike FROM (SELECT COUNT(mflight_phase) 
+    As count_bird_strike FROM incidents GROUP BY mflight_phase) As sub;
+```
+
+
+Task 6(10pts / 1hr):
+
+Single query on number of incidents by month (across all years) in ascending order by month.
+```{sql connection=mysqlconnection}
+SELECT COUNT(*) As Number_of_incidents, DATE_FORMAT(flight_date, '%m') As MONTH FROM 
+    incidents GROUP BY MONTH(flight_date) ORDER BY MONTH ASC;
+```
+
+Sum all the number of incidents per month to match the total incidents / records.
+```{sql connection=mysqlconnection}
+SELECT SUM(Number_of_incidents) As "Total Incidents" FROM (SELECT COUNT(*) As 
+    Number_of_incidents, DATE_FORMAT(flight_date, '%m') As MONTH FROM incidents 
+    GROUP BY MONTH(flight_date)) As sub;
+```
+
+
+Task 7(5pts / 4hrs):
+
+Getting the Number of incidents per year.
+```{sql connection=mysqlconnection}
+SELECT COUNT(*) As Number_of_incidents, DATE_FORMAT(flight_date, '%Y') As YEAR FROM 
+    incidents GROUP BY YEAR(flight_date);
+```
+
+Using sub-groups to filter the query only from 2005 to 2011.
+```{sql connection=mysqlconnection}
+SELECT Number_of_incidents, YEAR FROM (SELECT COUNT(*) As Number_of_incidents, 
+    DATE_FORMAT(flight_date, '%Y') As YEAR FROM incidents GROUP BY YEAR(flight_date)) 
+    As sub HAVING YEAR > 2004 ORDER BY YEAR ASC;
+```
+
+Plot the number of incidents per year from 2005 to 2011. 
+```{r}
+# generate a dataframe for task 7.
+task7 <- dbGetQuery(conn = mysqlconnection, statement = "SELECT Number_of_incidents, 
+                    YEAR FROM (SELECT COUNT(*) As Number_of_incidents, 
+                    DATE_FORMAT(flight_date, '%Y') As YEAR FROM incidents GROUP BY 
+                    YEAR(flight_date)) As sub HAVING YEAR > 2004 ORDER BY YEAR ASC;")
+
+# define the column needed to plot.
+input <- task7[, c('YEAR', 'Number_of_incidents')]
+
+# change the year to integer data type
+input$YEAR <- as.integer(input$YEAR)
+
+# plot the input dataframe
+barplot(input$Number_of_incidents, names.arg = input$YEAR, xlab = "Year", 
+        ylab = "Number of Incidents", col = "blue", main = "Incidents per Year")
+```
+
+Task 8(15pts / 3hrs):
+
+Stored procedure in MySQL.
+```{r}
+dbExecute(conn = mysqlconnection, statement = "CREATE PROCEDURE sp_AddBirdStrikeIncident(
+            IN p_rid INT, IN p_flight_date Date, IN p_airportName VARCHAR(255), 
+            IN p_state VARCHAR(50), IN p_airline VARCHAR(255), IN p_aircraft VARCHAR(50), 
+            IN p_mflight_phase VARCHAR(50), IN p_altitude_ft INT, IN p_sky_condition VARCHAR(50), 
+            IN p_pilot_warned_flag BOOLEAN)
+          BEGIN
+            INSERT INTO incidents(rid, flight_date, origin, airline, aircraft, mflight_phase, 
+              altitude_ft, msky_conditions, pilot_warned_flag) 
+              VALUES(p_rid, p_flight_date, (SELECT aid+1 FROM airports ORDER BY aid DESC LIMIT 1), 
+              p_airline, p_aircraft, p_mflight_phase, p_altitude_ft, (SELECT cid FROM conditions 
+              WHERE sky_conditions = p_sky_condition), p_pilot_warned_flag);
+            INSERT INTO airports(aid, airportName, airportCode, state) 
+              VALUES((SELECT origin FROM incidents WHERE rid = p_rid), p_airportName, '', p_state);
+          END")
+```
+
+Execute the stored procedure according to defined value to add a bird strike incident. 
+rid = 25342
+flight_date = '2022-06-29'
+airportName = 'New Brookline International Airport'
+state = 'Massachusettes'
+airline = 'JetBlue'
+aircraft = 'Airplane'
+flight_phase = 'takeoff'
+altitude_ft = 3000
+sky_condition = 'Some Cloud'
+pilot_warned_flag = 0(FALSE)
+```{r}
+dbExecute(conn = mysqlconnection, statement = "CALL sp_AddBirdStrikeIncident(25342, '2022-06-29', 
+          'New Brookline International Airport', 'Massachusettes', 'JetBlue', 'Airplane', 
+          'takeoff', 3000, 'Some Cloud', 0)");
+```
+
+Show the added airport 'New Brookline International Airport'. Using R.
+```{r}
+db_query_NBIA <- dbGetQuery(conn = mysqlconnection, statement ="SELECT * FROM airports 
+                            WHERE state = 'Massachusettes';")
+db_query_NBIA
+```
+
+Show the added bird strike incident rid = 25342. Using R.
+```{r}
+db_query_25342 <- dbGetQuery(conn = mysqlconnection, statement ="SELECT * FROM incidents 
+                             WHERE rid = 25342;")
+db_query_25342
+```
+
+Show the new number of incidents. Increment by 1 due to execution of stored procedure. Using R.
+```{r}
+db_query_incidents <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM incidents;")
+numRows_db_query_numIncidents <- nrow(db_query_incidents)
+print(paste0("New number of incidents = ", numRows_db_query_numIncidents))
+```
+
+Show the new number of airports. Increment by 1 due to execution of stored procedure. Using R.
+```{r}
+db_query_airports <- dbGetQuery(conn = mysqlconnection, statement = "SELECT * FROM airports;")
+numRows_db_query_airports <- nrow(db_query_airports)
+print(paste0("New number of airports = ", numRows_db_query_airports))
+```
+
+Show the added airport 'New Brookline International Airport'. Using SQL.
+```{sql connection=mysqlconnection}
+SELECT * FROM airports WHERE state = 'Massachusettes';
+```
+
+Show the added bird strike incident rid = 25342. Using SQL.
+```{sql connection=mysqlconnection}
+SELECT * FROM incidents WHERE rid = 25342;
+```
+
+Show the new number of incidents. Increment by 1 due to execution of stored procedure. Using SQL.
+```{sql connection=mysqlconnection}
+SELECT SUM(Number_of_incidents) As "Total Incidents" FROM (SELECT COUNT(*) As Number_of_incidents, 
+    DATE_FORMAT(flight_date, '%m') As MONTH FROM incidents GROUP BY MONTH(flight_date)) As sub;
+```
+
+
+
+Debug Commands:
+
+Delete a table.
+```{r}
+dbSendQuery(mysqlconnection, "DROP TABLE IF EXISTS incidents")
+```
+
+Delete a table.
+```{r}
+dbSendQuery(mysqlconnection, "DROP TABLE IF EXISTS airports")
+```
+
+```{r}
+dbSendQuery(mysqlconnection, "DROP TABLE IF EXISTS conditions")
+```
+
+```{r}
+dbSendQuery(mysqlconnection, "DROP TABLE IF EXISTS flight_phase_enum")
+```
+
+Disconnect the mysqlconnection.
+```{r}
+dbDisconnect(mysqlconnection);
+dbDisconnect(sqliteconnection);
+```
+
+Disconnect all existing connections in MySQL.
+```{r}
+dbDisconnectAll <- function(){
+  disconnectAll <- length(dbListConnections(MySQL())  )
+  lapply( dbListConnections(MySQL()), function(x) dbDisconnect(x) )
+  cat(sprintf("%s connection(s) closed.\n", disconnectAll))
+}
+```
+
+```{r}
+dbDisconnectAll()
+```
+
+

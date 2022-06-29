@@ -1,0 +1,10 @@
+show databases;
+use birdstrikesdb;
+select * from incidents WHERE rid=25342;
+select * from airports where aid = 1110;
+select * from airports where state = "Massachusettes";
+select * from conditions;
+select * from flight_phase_enum;
+select * from incidents;
+select * from airports;
+delete from conditions WHERE sky_conditions like "Landing";
